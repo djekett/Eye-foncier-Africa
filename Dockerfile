@@ -26,11 +26,11 @@ RUN pip install --upgrade pip && pip install -r requirements.txt
 # Copier le projet
 COPY . .
 
-# Collecter les fichiers statiques
-RUN python manage.py collectstatic --no-input
-
 # Exposer le port
 EXPOSE 10000
 
-# Démarrer avec Gunicorn
-CMD ["gunicorn", "eyefoncier.wsgi:application", "--bind", "0.0.0.0:10000"]
+# Script de démarrage : collectstatic + migrate + gunicorn
+COPY entrypoint.sh /entrypoint.sh
+RUN chmod +x /entrypoint.sh
+
+CMD ["/entrypoint.sh"]
