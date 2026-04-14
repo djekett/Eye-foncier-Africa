@@ -8,10 +8,8 @@ databases:
 services:
   - type: web
     name: eye-foncier
-    runtime: python
+    runtime: docker
     plan: free
-    buildCommand: "./build.sh"
-    startCommand: "gunicorn eyefoncier.wsgi:application"
     envVars:
       - key: DATABASE_URL
         fromDatabase:
@@ -23,7 +21,5 @@ services:
         value: "False"
       - key: DJANGO_ALLOWED_HOSTS
         value: ".onrender.com"
-      - key: PYTHON_VERSION
-        value: "3.11.8"
       - key: WEB_CONCURRENCY
         value: "4"
