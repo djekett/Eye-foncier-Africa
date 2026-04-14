@@ -1,0 +1,29 @@
+databases:
+  - name: eyefoncier-db
+    plan: free
+    databaseName: eyefoncier
+    postgresMajorVersion: "16"
+    ipAllowList: []
+
+services:
+  - type: web
+    name: eye-foncier
+    runtime: python
+    plan: free
+    buildCommand: "./build.sh"
+    startCommand: "gunicorn eyefoncier.wsgi:application"
+    envVars:
+      - key: DATABASE_URL
+        fromDatabase:
+          name: eyefoncier-db
+          property: connectionURI
+      - key: DJANGO_SECRET_KEY
+        generateValue: true
+      - key: DJANGO_DEBUG
+        value: "False"
+      - key: DJANGO_ALLOWED_HOSTS
+        value: ".onrender.com"
+      - key: PYTHON_VERSION
+        value: "3.11.8"
+      - key: WEB_CONCURRENCY
+        value: "4"
