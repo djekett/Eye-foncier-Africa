@@ -9,4 +9,6 @@ urlpatterns = [
     path("parcelle/<uuid:parcelle_pk>/fiche-pdf/", views.parcelle_fiche_pdf, name="fiche_pdf"),
     path("<uuid:pk>/consulter/", views.document_view_watermarked, name="view_watermarked"),
     path("coffre-fort/", views.digital_vault_view, name="digital_vault"),
+    # Lien d'accès sécurisé temporaire (email/WhatsApp)
+    path("secure/<str:token>/", views.secure_document_view, name="secure_access"),
 ]

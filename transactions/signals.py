@@ -144,17 +144,32 @@ def handle_transaction_completed(sender, instance, **kwargs):
 # ── Signals Cotation & Vérification ──
 
 @receiver(post_save, sender="transactions.VerificationRequest")
-def handle_verification_status_change(sender, instance, **kwargs):
+def handle_verification_status_change(sender, instance, created, **kwargs):
     """
     Actions automatiques sur changement de statut de vérification :
+    - created      → confirmer la prise en charge au buyer (SMS + Email)
     - docs_watermarked → appliquer le filigrane Eye-Africa sur les documents
-    - completed → notifier les deux parties
+    - completed    → alerte WhatsApp FOMO + email au buyer / email vendeur
     """
-    if instance.status == "docs_watermarked":
+    if created:
+        _notify_verification_requested(instance)
+
+    elif instance.status == "docs_watermarked":
         _apply_watermarks_to_parcelle_docs(instance)
 
     elif instance.status == "completed":
         _notify_verification_completed(instance)
+
+
+@receiver(post_save, sender="transactions.Transaction")
+def handle_payment_received(sender, instance, **kwargs):
+    """Envoie un reçu officiel (SMS + Email) lors d'un paiement reçu."""
+    # Séquestre alimenté (acompte)
+    if instance.status == "escrow_funded" and instance.escrow_funded:
+        _notify_payment_received(instance, payment_type="escrow")
+    # Paiement total reçu
+    elif instance.status == "paid":
+        _notify_payment_received(instance, payment_type="full")
 
 
 def _apply_watermarks_to_parcelle_docs(verification):
@@ -186,39 +201,78 @@ def _apply_watermarks_to_parcelle_docs(verification):
         )
 
 
+def _notify_verification_requested(verification):
+    """Confirme la prise en charge de la demande de vérification (SMS + Email)."""
+    try:
+        from notifications.services import send_notification
+
+        parcelle = verification.parcelle
+        send_notification(
+            recipient=verification.buyer,
+            notification_type="verification_requested",
+            title=f"Vérification lancée — {parcelle.lot_number}",
+            message=(
+                f"Votre demande de vérification foncière pour la parcelle "
+                f"{parcelle.lot_number} a bien été reçue. "
+                f"Nos experts Eye-Foncier vont l'examiner dans les plus brefs délais. "
+                f"Réf. : {verification.reference}"
+            ),
+            channels=["sms", "email", "inapp"],
+            data={
+                "parcelle_id": str(parcelle.pk),
+                "parcelle_lot": parcelle.lot_number,
+                "verification_id": str(verification.pk),
+                "reference": verification.reference,
+                "action_url": f"/transactions/verifications/{verification.pk}/",
+                "email_template": "notifications/email/verification_requested.html",
+            },
+            priority="high",
+        )
+    except Exception as e:
+        logger.error("Erreur notification vérification demandée : %s", e)
+
+
 def _notify_verification_completed(verification):
-    """Notifie acheteur et vendeur que la vérification est terminée."""
+    """Notifie acheteur (WhatsApp FOMO) et vendeur (email) que la vérification est terminée."""
     try:
         from notifications.services import send_notification
 
         parcelle = verification.parcelle
 
-        # Notification acheteur
+        # Notification acheteur — WhatsApp FOMO + email + in-app
         send_notification(
             recipient=verification.buyer,
             notification_type="verification_completed",
-            title=f"Vérification terminée — {parcelle.lot_number}",
+            title=f"✅ Terrain VÉRIFIÉ CLEAN — {parcelle.lot_number}",
             message=(
-                f"La vérification de la parcelle {parcelle.lot_number} est terminée. "
-                f"Rendez-vous dans les locaux Eye-Foncier pour l'achat définitif."
+                f"Excellente nouvelle ! La parcelle {parcelle.lot_number} "
+                f"({parcelle.surface_m2} m²) a été vérifiée et déclarée CLEAN par nos experts. "
+                f"Ce terrain est sécurisé et prêt à l'achat. "
+                f"Ne tardez pas — les terrains vérifiés partent rapidement !"
             ),
+            channels=["whatsapp", "email", "inapp"],
             data={
                 "parcelle_id": str(parcelle.pk),
+                "parcelle_lot": parcelle.lot_number,
+                "surface_m2": str(parcelle.surface_m2),
+                "price": str(parcelle.price),
                 "verification_id": str(verification.pk),
                 "action_url": f"/transactions/verifications/{verification.pk}/",
                 "email_template": "notifications/email/verification_completed.html",
             },
+            priority="high",
         )
 
-        # Notification vendeur
+        # Notification vendeur — email informatif
         send_notification(
             recipient=verification.seller,
             notification_type="verification_completed",
             title=f"Vérification terminée — {parcelle.lot_number}",
             message=(
                 f"La vérification de votre parcelle {parcelle.lot_number} est terminée. "
-                f"L'acheteur sera convié dans les locaux Eye-Foncier pour finaliser."
+                f"L'acheteur sera convié dans les locaux Eye-Foncier pour finaliser la transaction."
             ),
+            channels=["email", "inapp"],
             data={
                 "parcelle_id": str(parcelle.pk),
                 "verification_id": str(verification.pk),
@@ -228,3 +282,51 @@ def _notify_verification_completed(verification):
 
     except Exception as e:
         logger.error("Erreur notification vérification complétée : %s", e)
+
+
+def _notify_payment_received(transaction, payment_type="full"):
+    """Envoie un reçu officiel par SMS + Email lors d'un paiement."""
+    try:
+        from notifications.services import send_notification
+
+        parcelle = transaction.parcelle
+
+        if payment_type == "escrow":
+            amount = transaction.escrow_amount or 0
+            title = f"Séquestre reçu — {parcelle.lot_number}"
+            message = (
+                f"Nous confirmons la bonne réception de votre virement séquestre "
+                f"de {amount:,} FCFA pour la parcelle {parcelle.lot_number}. "
+                f"Votre dossier est sécurisé. Réf. : {transaction.reference}"
+            )
+            next_steps = "Nos équipes vont vérifier les documents avant la signature du compromis."
+        else:
+            amount = transaction.price or 0
+            title = f"Paiement intégral reçu — {parcelle.lot_number}"
+            message = (
+                f"Nous confirmons la réception de votre paiement intégral "
+                f"de {amount:,} FCFA pour la parcelle {parcelle.lot_number}. "
+                f"Félicitations pour votre acquisition ! Réf. : {transaction.reference}"
+            )
+            next_steps = "Rendez-vous chez le notaire pour la signature de l'acte définitif."
+
+        send_notification(
+            recipient=transaction.buyer,
+            notification_type="payment_received",
+            title=title,
+            message=f"{message} {next_steps}",
+            channels=["sms", "email", "inapp"],
+            data={
+                "transaction_id": str(transaction.pk),
+                "reference": transaction.reference,
+                "parcelle_lot": parcelle.lot_number,
+                "amount": str(amount),
+                "payment_type": payment_type,
+                "next_steps": next_steps,
+                "action_url": f"/transactions/{transaction.pk}/",
+                "email_template": "notifications/email/payment_received.html",
+            },
+            priority="urgent",
+        )
+    except Exception as e:
+        logger.error("Erreur notification paiement reçu : %s", e)

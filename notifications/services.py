@@ -54,6 +54,19 @@ def send_notification(
     if data is None:
         data = {}
 
+    # Résoudre le contenu depuis un NotificationTemplate si disponible
+    # (permet à l'admin de modifier les textes sans toucher au code)
+    if channels:
+        for ch in channels:
+            resolved = _resolve_template(notification_type, ch, {
+                "user_name": recipient.first_name or recipient.email.split("@")[0],
+                "user_email": recipient.email,
+                **data,
+            })
+            if resolved:
+                title, message = resolved
+                break  # Utiliser le premier template trouvé
+
     prefs = _get_preferences(recipient)
 
     # Vérifier si ce type est désactivé
@@ -271,6 +284,17 @@ def _dispatch_sms(notification):
     sender = getattr(settings, "INFOBIP_SENDER", "EYE-FONCIER")
 
     phone = getattr(notification.recipient, "phone", "")
+
+    # Mode sandbox : bloquer les envois vers numéros non autorisés
+    if getattr(settings, "NOTIFICATION_SANDBOX_MODE", False):
+        allowed = [p.strip() for p in getattr(settings, "NOTIFICATION_SANDBOX_PHONES", []) if p.strip()]
+        if phone not in allowed:
+            logger.info("[SANDBOX] SMS bloqué pour %s", phone or notification.recipient.email)
+            notification.is_sent = True
+            notification.sent_at = timezone.now()
+            notification.error_message = f"[SANDBOX] Bloqué — numéro non autorisé : {phone}"
+            notification.save(update_fields=["is_sent", "sent_at", "error_message"])
+            return
     if not phone:
         notification.error_message = "Pas de numéro de téléphone"
         notification.save(update_fields=["error_message"])
@@ -368,17 +392,56 @@ def _build_sms_body(notification):
         parts.append(f"Op: {operation}")
 
     header = " | ".join(parts)
-    remaining = 300 - len(header) - 1
-    if remaining > 20:
-        msg_part = notification.message[:remaining]
-        return f"{header}\n{msg_part}"
-    return header[:300]
+
+    # Mention opt-out obligatoire pour les SMS marketing (conformité ARTCI)
+    MARKETING_TYPES = {"newsletter", "inactivity_reminder"}
+    stop_mention = "\nSTOP au 12345 pour se désabonner" if notification.notification_type in MARKETING_TYPES else ""
+
+    max_body = 300 - len(header) - 1 - len(stop_mention)
+    if max_body > 20:
+        msg_part = notification.message[:max_body]
+        return f"{header}\n{msg_part}{stop_mention}"
+    return (header + stop_mention)[:300]
 
 
 def _dispatch_whatsapp(notification):
     """Envoie un message WhatsApp via Twilio."""
+    # Mode sandbox : bloquer les envois vers numéros non autorisés
+    if getattr(settings, "NOTIFICATION_SANDBOX_MODE", False):
+        allowed = [p.strip() for p in getattr(settings, "NOTIFICATION_SANDBOX_PHONES", []) if p.strip()]
+        phone = getattr(notification.recipient, "phone", "") or ""
+        if phone not in allowed:
+            logger.info(
+                "[SANDBOX] WhatsApp bloqué pour %s (non dans la liste autorisée)",
+                phone or notification.recipient.email,
+            )
+            notification.is_sent = True
+            notification.sent_at = timezone.now()
+            notification.error_message = f"[SANDBOX] Bloqué — numéro non autorisé : {phone}"
+            notification.save(update_fields=["is_sent", "sent_at", "error_message"])
+            return
     from .whatsapp_service import send_whatsapp
     send_whatsapp(notification)
+
+
+def _resolve_template(notification_type: str, channel: str, context: dict):
+    """
+    Cherche un NotificationTemplate actif pour ce type/canal.
+    Retourne (subject, body) après rendu Django, ou None si aucun template trouvé.
+    Utilisé comme surcharge optionnelle du message hardcodé.
+    """
+    try:
+        from .models import NotificationTemplate
+        tmpl = NotificationTemplate.objects.get(
+            notification_type=notification_type,
+            channel=channel,
+            is_active=True,
+        )
+        subject, body = tmpl.render(context)
+        return subject, body
+    except Exception:
+        # NotificationTemplate.DoesNotExist ou erreur de rendu → fallback silencieux
+        return None
 
 
 def _dispatch_push(notification):

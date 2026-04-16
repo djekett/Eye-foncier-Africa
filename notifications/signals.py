@@ -22,7 +22,12 @@ logger = logging.getLogger(__name__)
 def create_notification_preferences(sender, instance, created, **kwargs):
     """Crée les préférences de notification et envoie le mail de bienvenue."""
     if created:
-        NotificationPreference.objects.get_or_create(user=instance)
+        import secrets
+        prefs, _ = NotificationPreference.objects.get_or_create(user=instance)
+        # Générer un token de désinscription unique si absent
+        if not prefs.unsubscribe_token:
+            prefs.unsubscribe_token = secrets.token_urlsafe(48)
+            prefs.save(update_fields=["unsubscribe_token"])
         # Notification de bienvenue (asynchrone si Celery dispo)
         try:
             from .tasks import send_welcome_notification

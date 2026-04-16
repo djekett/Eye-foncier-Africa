@@ -3,8 +3,10 @@ Modèles du coffre-fort documentaire — EYE-FONCIER
 Stockage sécurisé avec traçabilité.
 """
 import uuid
+import secrets
 from django.db import models
 from django.conf import settings
+from django.utils import timezone
 from django.utils.translation import gettext_lazy as _
 from parcelles.models import Parcelle
 
@@ -88,3 +90,61 @@ class DocumentAccessLog(models.Model):
 
     def __str__(self):
         return f"{self.user} → {self.document} @ {self.timestamp:%Y-%m-%d %H:%M}"
+
+
+class SecureDocumentLink(models.Model):
+    """
+    Lien d'accès sécurisé à durée de vie limitée pour un document foncier.
+    Utilisé lors de l'envoi de documents par email ou WhatsApp.
+    Conforme aux exigences ARTCI : accès tracé, expirant, révocable.
+    """
+
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    document = models.ForeignKey(
+        ParcelleDocument, on_delete=models.CASCADE,
+        related_name="secure_links", verbose_name=_("document"),
+    )
+    token = models.CharField(
+        _("token"), max_length=64, unique=True, db_index=True,
+        help_text=_("Token aléatoire sécurisé (secrets.token_urlsafe)"),
+    )
+    recipient = models.ForeignKey(
+        settings.AUTH_USER_MODEL, on_delete=models.SET_NULL, null=True, blank=True,
+        related_name="secure_document_links", verbose_name=_("destinataire"),
+    )
+    expires_at = models.DateTimeField(_("expire le"))
+    access_count = models.PositiveIntegerField(_("nombre d'accès"), default=0)
+    max_accesses = models.PositiveIntegerField(
+        _("accès maximum"), default=5,
+        help_text=_("Le lien devient invalide après ce nombre d'accès"),
+    )
+    is_revoked = models.BooleanField(
+        _("révoqué"), default=False,
+        help_text=_("Révocation manuelle par un administrateur"),
+    )
+    accessed_at = models.DateTimeField(_("dernier accès le"), null=True, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        verbose_name = _("Lien document sécurisé")
+        verbose_name_plural = _("Liens documents sécurisés")
+        ordering = ["-created_at"]
+
+    def __str__(self):
+        return f"Lien sécurisé — {self.document} (expire: {self.expires_at:%d/%m/%Y %H:%M})"
+
+    def save(self, *args, **kwargs):
+        if not self.token:
+            self.token = secrets.token_urlsafe(48)
+        super().save(*args, **kwargs)
+
+    @property
+    def is_valid(self):
+        """Vérifie si le lien est encore utilisable."""
+        if self.is_revoked:
+            return False
+        if timezone.now() > self.expires_at:
+            return False
+        if self.access_count >= self.max_accesses:
+            return False
+        return True

@@ -4,7 +4,8 @@ Vues Notifications — EYE-FONCIER
 from django.contrib import messages
 from django.contrib.auth.decorators import login_required
 from django.http import JsonResponse
-from django.shortcuts import redirect, render
+from django.shortcuts import get_object_or_404, redirect, render
+from django.views.decorators.csrf import csrf_exempt
 from django.views.decorators.http import require_POST
 
 from .forms import NotificationPreferenceForm
@@ -121,3 +122,57 @@ def verify_whatsapp_view(request):
     return render(request, "notifications/verify_whatsapp.html", {
         "prefs": prefs,
     })
+
+
+def unsubscribe_view(request, token):
+    """
+    Désinscription en un clic depuis un lien email (marketing).
+    Accessible sans authentification — le token est l'unique credential.
+    """
+    prefs = get_object_or_404(NotificationPreference, unsubscribe_token=token)
+    if request.method == "POST":
+        prefs.marketing_consent = False
+        prefs.save(update_fields=["marketing_consent"])
+        return render(request, "notifications/unsubscribed.html", {"unsubscribed": True})
+
+    return render(request, "notifications/unsubscribed.html", {
+        "unsubscribed": False,
+        "user_email": prefs.user.email,
+    })
+
+
+@csrf_exempt
+@require_POST
+def sms_optout_webhook_view(request):
+    """
+    Webhook InfoBip : appelé automatiquement quand un utilisateur répond STOP.
+    Désactive sms_consent et sms_enabled pour ce numéro.
+    """
+    import json
+    import logging
+    from django.contrib.auth import get_user_model
+
+    logger = logging.getLogger(__name__)
+
+    try:
+        payload = json.loads(request.body)
+        # Format InfoBip : {"results": [{"from": "+22507XXXXXXXX", "text": "STOP", ...}]}
+        results = payload.get("results", [])
+        for msg in results:
+            phone = msg.get("from", "").strip()
+            text = msg.get("text", "").strip().upper()
+            if phone and text in ("STOP", "ARRET", "DESABONNER", "UNSUBSCRIBE"):
+                User = get_user_model()
+                user = User.objects.filter(phone=phone).first()
+                if user:
+                    NotificationPreference.objects.filter(user=user).update(
+                        sms_consent=False,
+                        sms_enabled=False,
+                    )
+                    logger.info("STOP SMS traité pour %s", phone)
+                else:
+                    logger.warning("STOP SMS : numéro %s introuvable en base", phone)
+    except Exception as e:
+        logger.error("Erreur webhook STOP SMS : %s", e)
+
+    return JsonResponse({"status": "ok"})

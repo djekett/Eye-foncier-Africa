@@ -648,3 +648,43 @@ def digital_vault_view(request):
 def _get_ip(request):
     x_forwarded = request.META.get("HTTP_X_FORWARDED_FOR")
     return x_forwarded.split(",")[0].strip() if x_forwarded else request.META.get("REMOTE_ADDR")
+
+
+def secure_document_view(request, token):
+    """
+    Accès à un document via un lien sécurisé à durée de vie limitée.
+    Accessible sans authentification obligatoire (le token fait office de credential).
+    Conforme ARTCI : accès tracé, expirant, révocable.
+    """
+    from .secure_links import validate_secure_link
+    from .models import DocumentAccessLog
+
+    document = validate_secure_link(token)
+    if not document:
+        return render(request, "documents/secure_link_expired.html", status=410)
+
+    # Log de consultation
+    user = request.user if request.user.is_authenticated else None
+    DocumentAccessLog.objects.create(
+        document=document,
+        user=user,
+        ip_address=_get_ip(request),
+        action="secure_link_access",
+    )
+
+    # Rediriger vers la vue avec watermark classique si l'utilisateur est connecté,
+    # sinon servir le fichier directement (avec contrôle)
+    if request.user.is_authenticated:
+        from django.urls import reverse
+        return redirect(reverse("documents:view_watermarked", kwargs={"pk": document.pk}))
+
+    # Servir le fichier brut pour un accès anonyme (ex: destinataire WhatsApp non inscrit)
+    import os
+    if document.file and os.path.isfile(document.file.path):
+        content_type = "application/pdf" if document.file.name.endswith(".pdf") else "application/octet-stream"
+        with open(document.file.path, "rb") as f:
+            response = HttpResponse(f.read(), content_type=content_type)
+            response["Content-Disposition"] = f'inline; filename="{os.path.basename(document.file.name)}"'
+            return response
+
+    raise Http404("Fichier introuvable.")

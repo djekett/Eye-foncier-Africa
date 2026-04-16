@@ -5,7 +5,7 @@ from .models import User, Profile
 
 
 class CustomUserCreationForm(UserCreationForm):
-    """Formulaire d'inscription enrichi."""
+    """Formulaire d'inscription enrichi avec gestion du consentement ARTCI."""
 
     role = forms.ChoiceField(
         choices=[
@@ -14,6 +14,18 @@ class CustomUserCreationForm(UserCreationForm):
         ],
         label="Je suis",
         widget=forms.RadioSelect(attrs={"class": "form-check-input"}),
+    )
+
+    # ── Consentement notifications (opt-in explicite requis par l'ARTCI) ──
+    sms_whatsapp_consent = forms.BooleanField(
+        required=False,
+        label="J'accepte d'être contacté(e) par SMS et WhatsApp pour le suivi de mes transactions",
+        widget=forms.CheckboxInput(attrs={"class": "form-check-input", "id": "id_sms_whatsapp_consent"}),
+    )
+    marketing_consent = forms.BooleanField(
+        required=False,
+        label="J'accepte de recevoir des newsletters et offres sur les nouveaux terrains disponibles",
+        widget=forms.CheckboxInput(attrs={"class": "form-check-input", "id": "id_marketing_consent"}),
     )
 
     class Meta:

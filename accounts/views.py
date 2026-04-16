@@ -39,6 +39,8 @@ def register_view(request):
                 user_agent=request.META.get("HTTP_USER_AGENT", ""),
                 details={"method": "register"},
             )
+            # ── Traitement du consentement notifications (ARTCI) ──
+            _save_notification_consent(user, form)
             # Parrainage : si code référent valide
             ref_post = request.POST.get("ref_code", ref_code)
             if ref_post:
@@ -941,3 +943,32 @@ def _handle_referral(new_user, ref_code):
 def _get_ip(request):
     x = request.META.get("HTTP_X_FORWARDED_FOR")
     return x.split(",")[0].strip() if x else request.META.get("REMOTE_ADDR")
+
+
+def _save_notification_consent(user, form):
+    """
+    Enregistre les préférences de consentement aux notifications
+    collectées lors de l'inscription (conformité ARTCI).
+    """
+    try:
+        from notifications.models import NotificationPreference
+
+        sms_whatsapp = form.cleaned_data.get("sms_whatsapp_consent", False)
+        marketing = form.cleaned_data.get("marketing_consent", False)
+
+        prefs, _ = NotificationPreference.objects.get_or_create(user=user)
+        prefs.sms_consent = sms_whatsapp
+        prefs.sms_enabled = sms_whatsapp
+        prefs.whatsapp_consent = sms_whatsapp
+        prefs.whatsapp_enabled = sms_whatsapp
+        prefs.marketing_consent = marketing
+        prefs.consent_given_at = timezone.now()
+        # Pré-remplir le numéro WhatsApp depuis le profil si disponible
+        if sms_whatsapp and user.phone and not prefs.whatsapp_number:
+            prefs.whatsapp_number = user.phone
+        prefs.save()
+    except Exception as e:
+        import logging
+        logging.getLogger(__name__).error(
+            "Erreur enregistrement consentement pour %s : %s", user.email, e
+        )

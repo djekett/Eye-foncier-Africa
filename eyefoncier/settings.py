@@ -527,4 +527,30 @@ CELERY_BEAT_SCHEDULE = {
         "task": "notifications.tasks.cleanup_old_logs",
         "schedule": 86400.0,  # Une fois par jour
     },
+    # Ré-engagement des utilisateurs inactifs depuis 30+ jours
+    "check-inactive-users": {
+        "task": "notifications.tasks.check_inactive_users",
+        "schedule": 86400.0,  # Une fois par jour
+    },
+    # Newsletter hebdomadaire — nouveaux terrains sécurisés (lundi 9h)
+    "weekly-new-lots-newsletter": {
+        "task": "notifications.tasks.send_new_lots_newsletter",
+        "schedule": 604800.0,  # Une fois par semaine (7 jours)
+    },
 }
+
+# ──────────────────────────────────────────────
+# Notifications — Sandbox & Sécurité
+# ──────────────────────────────────────────────
+# En mode sandbox, les SMS/WhatsApp ne partent que vers les numéros listés.
+# Utiliser pour les tests en Côte d'Ivoire avant mise en production.
+# Ex: NOTIFICATION_SANDBOX_PHONES=+22507XXXXXXXX,+22505XXXXXXXX
+NOTIFICATION_SANDBOX_MODE = os.environ.get("NOTIFICATION_SANDBOX_MODE", "false").lower() == "true"
+NOTIFICATION_SANDBOX_PHONES = [
+    p.strip()
+    for p in os.environ.get("NOTIFICATION_SANDBOX_PHONES", "").split(",")
+    if p.strip()
+]
+
+# URL de base de la plateforme (pour les liens sécurisés dans les notifications)
+PLATFORM_URL = os.environ.get("PLATFORM_URL", "https://eye-foncier.ci")
